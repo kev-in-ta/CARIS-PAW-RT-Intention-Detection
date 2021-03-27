@@ -29,39 +29,53 @@ from featuresLib import *
 # Classification frequency
 CLASS_DELAY = 0.2  # in s
 
-PERSON = 'Jamie'  # 'Jamie' or 'Mahsa'
-
 # Direction Vectors
-DATA_COLUMNS = ['AngVel_L', 'AngVel_R', 'Chair_LinVel', 'Chair_AngVel', 'Torque_L', 'Torque_R']
+#DATA_COLUMNS = ['AngVel_L', 'AngVel_R', 'Chair_LinVel', 'Chair_AngVel', 'Torque_L', 'Torque_R', 'Torque_sum',
+#                'Torque_diff', 'Torque_L_roc', 'Torque_R_roc']
+DATA_COLUMNS = ['Torque_L', 'Torque_R', 'Torque_sum', 'Torque_diff', 'Torque_L_roc', 'Torque_R_roc']
 
 EPSILON = 0.00001  # For small float values
 
 # filter parameters
 CUT_OFF = 20  # lowpass cut-off frequency (Hz)
 
-PAD_LENGTH = 15  # pad length to let filtering be better
+PAD_LENGTH = 10  # pad length to let filtering be better
 
 # DICTIONARIES
 
 INTENTIONS_DICT = [
-    ('Mahsa', 'Obstacles15', 'T1'),
-    ('Mahsa', 'Obstacles35', 'T2'),
-]
+    ('Mahsa', 'Obstacles15', 'T3'),
+    ('Mahsa', 'Obstacles35', 'T3'),
+    ('Mahsa', 'RampA', 'T3'),
+    ('Mahsa', 'StraightF', 'T3'),
+    ('Mahsa', 'Turn90FL', 'T3'),
+    ('Mahsa', 'Turn90FR', 'T3'),
+    ('Mahsa', 'Turn180L', 'T3'),
+    ('Mahsa', 'Turn180R', 'T3'),
+    ('Jaimie', 'Obstacles15', 'T3'),
+    ('Jaimie', 'Obstacles35', 'T3'),
+    ('Jaimie', 'RampA', 'T3'),
+    ('Jaimie', 'StraightF', 'T3'),
+    ('Jaimie', 'Turn90FL', 'T3'),
+    ('Jaimie', 'Turn90FR', 'T3'),
+    ('Jaimie', 'Turn180L', 'T3'),
+    ('Jaimie', 'Turn180R', 'T3'),
+    ]
 
 # Time domain feature functions and names
-TIME_FEATURES = {'Mean': np.mean, 'Std': np.std, 'Norm': l2norm,
+TIME_FEATURES = {'Mean': np.mean, 'Std': np.std,
                  'Max': np.amax, 'Min': np.amin, 'RMS': rms}
 
 # TIME_FEATURES_NAMES = ['Mean', 'Std', 'Norm', 'AC', 'Max', 'Min', 'RMS', 'ZCR', 'Skew', 'EK']
-TIME_FEATURES_NAMES = ['Mean', 'Std', 'Norm', 'Max', 'Min', 'RMS']
+TIME_FEATURES_NAMES = ['Mean', 'Std', 'Max', 'Min', 'RMS']
 
 # Different data sets
-SENSOR_MODULE = {'wLength': 16, 'fSamp': 200, 'fLow': 20, 'fHigh': 1}
+SENSOR_MODULE = {'wLength': 16, 'fSamp': 200, 'fLow': 5, 'fHigh': 1}
 
 PERFORMANCE = {}
 
-INTENTIONS_OG = {'Left': 0, 'Right': 1, 'Forward': 2, 'Stopped': 3, 'Backwards': 4}
-INTENTIONS = ['Left', 'Right', 'Forward', 'Stopped', 'Backwards']
+#INTENTIONS_OG = {'Left': 0, 'Right': 1, 'Forward': 2, 'Stopped': 3, 'Backwards': 4}
+#INTENTIONS = ['Left', 'Right', 'Forward', 'Stopped', 'Backwards']
 
 # CLASSES
 
@@ -84,7 +98,10 @@ class ClIntentionDetector:
 
         self.RFTimelinePipeline = load('models/model.joblib')
 
-        self.RFResults = pd.DataFrame(columns=["True Label", "RF Time", "Time"])
+        print(self.RFTimelinePipeline.get_params())
+
+        self.RFResults = pd.DataFrame(columns=["Time", "Cluster 1", "Cluster 2", "Cluster 3", "Cluster 4",
+                                               "Cluster 5", "Cluster 6", "Torque L", "Torque R"])
 
         # Prepopulate pandas dataframe
         EFTimeColumnNames = ['{} {}'.format(featName, direction) for direction in DATA_COLUMNS for
@@ -99,13 +116,13 @@ class ClIntentionDetector:
         self.runMarker = Queue()
 
         # Create class variables
-        self.windowIMUraw = np.zeros((self.sensorParam['wLength'] + 2 * PAD_LENGTH, len(DATA_COLUMNS)))
+        self.windowIMUraw = np.zeros((self.sensorParam['wLength'] + 2 * PAD_LENGTH, 6))
         self.windowIMUfiltered = np.zeros((self.sensorParam['wLength'], len(DATA_COLUMNS)))
 
         # Instantiate sensor information retrieval
         self.instDAQLoop = ClSensorDataStream(self.sensorParam['fSamp'], self.dataQueue, self.runMarker, self.testSet)
 
-    def fnStart(self, frequency):
+    def fnStart(self):
         """
         Purpose:	Intialize all active sensors in separate processed and collects data from the Queue
         Passed:		Frequency for 6-axis IMU to operate at
@@ -128,15 +145,10 @@ class ClIntentionDetector:
 
             try:
                 transmissionData = self.dataQueue.get(timeout=2)
-
-                if transmissionData[0] in ['IMU_6', 'WHEEL']:
-                    self.windowIMUraw = np.roll(self.windowIMUraw, -1, axis=0)
-                elif transmissionData[0] in ['USS_DOWN', 'USS_FORW']:
-                    pass
-                elif transmissionData[0] in ['PI_CAM']:
-                    pass
+                self.windowIMUraw = np.roll(self.windowIMUraw, -1, axis=0)
+                self.windowIMUraw[-1, :] = transmissionData[:]
             except Exception as e:
-                print(e)
+                print('Exception: {}'.format(e))
 
         # wait for all processes and threads to complete
         intention.join()
@@ -168,15 +180,23 @@ class ClIntentionDetector:
             # Build extracted feature vector
             self.fnBuildTimeFeatures(TIME_FEATURES_NAMES)
 
-            intentionRFTime = self.RFTimelinePipeline.predict(self.EFTimeColumnedFeatures)
+            #intentionRFTime = self.RFTimelinePipeline.predict(self.EFTimeColumnedFeatures)
+            intentionRFTime = self.RFTimelinePipeline.predict_proba(self.EFTimeColumnedFeatures)
 
             try:
-                print('Prediction: {0:>10s}'.format(INTENTIONS[intentionRFTime[0]]))
-                self.RFResults = self.RFResults.append({"Cluster Label": INTENTIONS_OG[self.testSet[1]],
-                                                        "RF Time": intentionRFTime[0], "Time": time.time()},
+                print('Prediction: {}'.format(intentionRFTime))
+                self.RFResults = self.RFResults.append({"Cluster 1": intentionRFTime[0,0],
+                                                        "Cluster 2": intentionRFTime[0,1],
+                                                        "Cluster 3": intentionRFTime[0,2],
+                                                        "Cluster 4": intentionRFTime[0,3],
+                                                        "Cluster 5": intentionRFTime[0,4],
+                                                        "Cluster 6": intentionRFTime[0,5],
+                                                        "Torque L": self.EFTimeColumnedFeatures['Mean Torque_L'][0],
+                                                        "Torque R": self.EFTimeColumnedFeatures['Mean Torque_R'][0],
+                                                        "Time": time.time()},
                                                        ignore_index=True)
             except Exception as e:
-                print(e)
+                print("Exception: {}".format(e))
                 break
 
         # time.sleep(waitTime - (time.perf_counter() % waitTime))
@@ -187,24 +207,14 @@ class ClIntentionDetector:
                                                                                        count, (endTime - startTime)))
         print("Intention Detection completed.")
 
-        PERFORMANCE["{}-{}-{}-Classification".format(self.testSet[1], self.testSet[2], self.testSet[0])] = (
+        PERFORMANCE["{}-{}-{}-Classification".format(self.sensorParam['wLength'], self.testSet[1], self.testSet[0])] = (
         count, endTime - startTime)
 
         self.RFResults.to_csv(
             os.path.join('2021-Results',
-                         "{:.0f}ms-{}-{}-{}.csv".format(CLASS_DELAY * 1000, self.testSet[1], self.testSet[2],
+                         "{:.0f}ms-{}-{}-{}.csv".format(CLASS_DELAY * 1000, self.sensorParam['wLength'], self.testSet[1],
                                                            self.testSet[0])))
         print('Saved.')
-
-        self.RFResults = self.RFResults[self.RFResults["RF Time"] != 0]
-
-        y_pred = self.RFResults["RF Time"].to_numpy(dtype=np.int8)
-        print(y_pred.shape)
-        y_test = INTENTIONS_OG[self.testSet[1]] * np.ones(len(y_pred), dtype=np.int8)
-        print(y_test.shape)
-
-        print(accuracy_score(y_test, y_pred))
-        print(balanced_accuracy_score(y_test, y_pred))
 
     def fnShutDown(self):
 
@@ -231,10 +241,31 @@ class ClIntentionDetector:
 
         dataSet = np.copy(dataWindow)
 
-        # Filter all the data columns
-        for i in range(6):
-            self.windowIMUfiltered[:, i] = signal.sosfiltfilt(sos, dataSet[:, i])[
-                                           PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH]  # *hanningWindow
+        #angVelL = signal.sosfiltfilt(sos, dataSet[:, 0])
+        #angVelR = signal.sosfiltfilt(sos, dataSet[:, 1])
+        #chaVelLin = signal.sosfiltfilt(sos, dataSet[:, 2])
+        #chaVelAng = signal.sosfiltfilt(sos, dataSet[:, 3])
+        torqueL = signal.sosfiltfilt(sos, dataSet[:, 4])
+        torqueR = signal.sosfiltfilt(sos, dataSet[:, 5])
+
+        #self.windowIMUfiltered[:, 0] = angVelL[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH]
+        #self.windowIMUfiltered[:, 1] = angVelR[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH]
+        #self.windowIMUfiltered[:, 2] = chaVelLin[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH]
+        #self.windowIMUfiltered[:, 3] = chaVelAng[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH]
+        self.windowIMUfiltered[:, 0] = torqueL[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH]
+        self.windowIMUfiltered[:, 1] = torqueR[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH]
+        self.windowIMUfiltered[:, 2] = torqueL[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH] + \
+                                       torqueR[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH]
+        self.windowIMUfiltered[:, 3] = torqueR[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH] - \
+                                       torqueL[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH]
+        self.windowIMUfiltered[:, 4] = (torqueL[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH] - torqueL[
+                                                                                                      PAD_LENGTH-1:
+                                                                                                      self.sensorParam[
+                                                                                                          'wLength'] + PAD_LENGTH - 1])
+        self.windowIMUfiltered[:, 5] = (torqueR[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH] - torqueR[
+                                                                                                      PAD_LENGTH - 1:
+                                                                                                      self.sensorParam[
+                                                                                                          'wLength'] + PAD_LENGTH - 1])
 
     def fnBuildTimeFeatures(self, features):
         """
@@ -256,15 +287,16 @@ class ClSensorDataStream(threading.Timer):
 
     def __init__(self, frequency, dataQueue, runMarker, testSet):
         self.testSet = testSet
-        self.streamFile = pd.read_csv(
-            os.path.join(dir_path, "Trimmed_Data", PERSON,
-                         "Middle_{}Power{}{}_Module.csv".format(testSet[1], testSet[2], testSet[0])))
+        self.streamFile = pd.read_excel(
+            os.path.join(dir_path, "Trimmed_Data", testSet[0],
+                         "{}_{}.xls".format(testSet[1], testSet[2])))
         self.streamRow = 0
         self.streamRowEnd = len(self.streamFile.index)
         self.dataQueue = dataQueue
         self.runMarker = runMarker
-        self.offset = np.zeros(6)
         self.frequency = frequency
+        self.data = np.zeros(2)
+        self.data_prev = np.zeros(2)
 
     def fnRetrieveData(self):
         """
@@ -274,8 +306,10 @@ class ClSensorDataStream(threading.Timer):
 
         timeRecorded = time.time()
         if self.streamRow < self.streamRowEnd:
-            data = self.streamFile.iloc[self.streamRow, :]
-            self.dataQueue.put(['IMU_6', data[9], data[0], data[1], data[2], data[3], data[4], data[5]])
+            self.data = self.streamFile.iloc[self.streamRow, 1:7]
+            #self.dataQueue.put([self.data[0], self.data[1]])
+            self.dataQueue.put([self.data[0], self.data[1], self.data[2], self.data[3], self.data[4], self.data[5]])
+            self.data_prev = self.data
             self.streamRow += 1
         else:
             self.runMarker.put(False)
@@ -311,9 +345,6 @@ class ClSensorDataStream(threading.Timer):
 
         print("Sampling Frequency:       {:>8.2f} Hz. ({} Samples in {:.2f} s)".format(count / (endTime - startTime),
                                                                                        count, (endTime - startTime)))
-
-        PERFORMANCE["{}-{}-{}-Acquisition".format(self.testSet[1], self.testSet[2], self.testSet[0])] = (
-            count, endTime - startTime)
 
         # Joins thread
         timerRepeat.join()
@@ -360,4 +391,5 @@ if __name__ == "__main__":
 
         print(PERFORMANCE)
 
-        dump(PERFORMANCE, os.path.join('2021-Results', 'performance.joblib'))
+        os.makedirs(os.path.join(dir_path, '2021-Results'), exist_ok=True)
+        dump(PERFORMANCE, os.path.join(dir_path, '2021-Results', 'performance.joblib'))
