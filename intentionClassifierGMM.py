@@ -15,6 +15,7 @@ from threading import Thread
 
 import pandas as pd
 from joblib import load, dump
+import pickle as pkl
 from scipy import signal
 from sklearn.metrics import accuracy_score, balanced_accuracy_score
 
@@ -30,7 +31,9 @@ from featuresLib import *
 CLASS_DELAY = 0.2  # in s
 
 # Direction Vectors
-DATA_COLUMNS = ['Torque_L', 'Torque_R', 'Torque_sum', 'Torque_diff', 'Torque_L_roc', 'Torque_R_roc']
+DATA_COLUMNS = ['AngVel_L', 'AngVel_R', 'Chair_LinVel', 'Chair_AngVel', 'Torque_L', 'Torque_R', 'Torque_sum',
+                'Torque_diff', 'Torque_L_roc', 'Torque_R_roc']
+DATA_COLUMNS_MODEL = ['Torque_L', 'Torque_R', 'Torque_sum', 'Torque_diff', 'Torque_L_roc', 'Torque_R_roc']
 
 EPSILON = 0.00001  # For small float values
 
@@ -48,15 +51,7 @@ INTENTIONS_DICT = [
     ('Mahsa', 'Turn90FL', 'T2'),
     ('Mahsa', 'Turn90FR', 'T1'),
     ('Mahsa', 'Turn180L', 'T2'),
-    ('Mahsa', 'Turn180R', 'T2'),
-    # ('Jaimie', 'Obstacles15', 'T3'),
-    # ('Jaimie', 'Obstacles35', 'T3'),
-    # ('Jaimie', 'RampA', 'T3'),
-    # ('Jaimie', 'StraightF', 'T3'),
-    # ('Jaimie', 'Turn90FL', 'T3'),
-    # ('Jaimie', 'Turn90FR', 'T3'),
-    # ('Jaimie', 'Turn180L', 'T3'),
-    # ('Jaimie', 'Turn180R', 'T3'),
+    ('Mahsa', 'Turn180R', 'T2')
 ]
 
 # Time domain feature functions and names
@@ -91,7 +86,8 @@ class ClIntentionDetector:
 
         print('unpickling')
 
-        self.RFTimelinePipeline = load('models/modelRFKinetic.joblib')
+        self.RFTimeScaler = load('models/scalerGMM.joblib')
+        self.RFTimeModel = pkl.load(open('models/modelGMM.joblib', 'rb'))
 
         self.RFResults = pd.DataFrame(columns=["Time", "Cluster 1", "Cluster 2", "Cluster 3", "Cluster 4",
                                                "Cluster 5", "Cluster 6", "Torque L", "Torque R"])
@@ -163,8 +159,6 @@ class ClIntentionDetector:
         # Keep running until run marker tells to terminate
         while self.runMarker.empty():
 
-            # time.sleep(waitTime - (time.perf_counter() % waitTime))
-
             count += 1
 
             # Filter window
@@ -173,8 +167,9 @@ class ClIntentionDetector:
             # Build extracted feature vector
             self.fnBuildTimeFeatures(TIME_FEATURES_NAMES)
 
-            # intentionRFTime = self.RFTimelinePipeline.predict(self.EFTimeColumnedFeatures)
-            intentionRFTime = self.RFTimelinePipeline.predict_proba(self.EFTimeColumnedFeatures)
+            # intentionRFTime = self.RFTimeModel.predict(self.EFTimeColumnedFeatures)
+            intentionRFTime = self.RFTimeModel.predict_proba(
+                self.RFTimeScaler.transform(self.EFTimeColumnedFeatures)[:, 20::])
 
             try:
                 # print('Prediction: {}'.format(intentionRFTime))
@@ -192,6 +187,8 @@ class ClIntentionDetector:
                 print("Exception: {}".format(e))
                 break
 
+        # time.sleep(waitTime - (time.perf_counter() % waitTime))
+
         endTime = time.time()
 
         print("Classification Frequency: {:>8.2f} Hz. ({} Samples in {:.2f} s)".format(count / (endTime - startTime),
@@ -204,7 +201,8 @@ class ClIntentionDetector:
         self.RFResults.to_csv(
             os.path.join('2021-Results',
                          "{:.0f}Hz-{}-{}-{}.csv".format(self.sensorParam['fSamp'], self.sensorParam['wLength'],
-                                                        self.testSet[1], self.testSet[0])))
+                                                        self.testSet[1],self.testSet[0])))
+
         print('Saved.')
 
     def fnShutDown(self):
@@ -232,18 +230,26 @@ class ClIntentionDetector:
 
         dataSet = np.copy(dataWindow)
 
+        angVelL = signal.sosfiltfilt(sos, dataSet[:, 0])
+        angVelR = signal.sosfiltfilt(sos, dataSet[:, 1])
+        chaVelLin = signal.sosfiltfilt(sos, dataSet[:, 2])
+        chaVelAng = signal.sosfiltfilt(sos, dataSet[:, 3])
         torqueL = signal.sosfiltfilt(sos, dataSet[:, 4])
         torqueR = signal.sosfiltfilt(sos, dataSet[:, 5])
 
-        self.windowIMUfiltered[:, 0] = torqueL[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH]
-        self.windowIMUfiltered[:, 1] = torqueR[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH]
-        self.windowIMUfiltered[:, 2] = torqueL[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH] + \
+        self.windowIMUfiltered[:, 0] = angVelL[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH]
+        self.windowIMUfiltered[:, 1] = angVelR[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH]
+        self.windowIMUfiltered[:, 2] = chaVelLin[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH]
+        self.windowIMUfiltered[:, 3] = chaVelAng[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH]
+        self.windowIMUfiltered[:, 4] = torqueL[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH]
+        self.windowIMUfiltered[:, 5] = torqueR[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH]
+        self.windowIMUfiltered[:, 6] = torqueL[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH] + \
                                        torqueR[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH]
-        self.windowIMUfiltered[:, 3] = torqueR[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH] - \
+        self.windowIMUfiltered[:, 7] = torqueR[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH] - \
                                        torqueL[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH]
-        self.windowIMUfiltered[:, 4] = (torqueL[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH] -
+        self.windowIMUfiltered[:, 8] = (torqueL[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH] -
                                         torqueL[PAD_LENGTH - 1:self.sensorParam['wLength'] + PAD_LENGTH - 1])
-        self.windowIMUfiltered[:, 5] = (torqueR[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH] -
+        self.windowIMUfiltered[:, 9] = (torqueR[PAD_LENGTH:self.sensorParam['wLength'] + PAD_LENGTH] -
                                         torqueR[PAD_LENGTH - 1:self.sensorParam['wLength'] + PAD_LENGTH - 1])
 
     def fnBuildTimeFeatures(self, features):

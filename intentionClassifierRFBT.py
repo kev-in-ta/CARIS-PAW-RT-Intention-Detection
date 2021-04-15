@@ -34,8 +34,6 @@ DATA_COLUMNS = ['Torque_L', 'Torque_R', 'Torque_sum', 'Torque_diff', 'Torque_L_r
 
 EPSILON = 0.00001  # For small float values
 
-# filter parameters
-
 PAD_LENGTH = 10  # pad length to let filtering be better
 
 # DICTIONARIES
@@ -48,15 +46,7 @@ INTENTIONS_DICT = [
     ('Mahsa', 'Turn90FL', 'T2'),
     ('Mahsa', 'Turn90FR', 'T1'),
     ('Mahsa', 'Turn180L', 'T2'),
-    ('Mahsa', 'Turn180R', 'T2'),
-    # ('Jaimie', 'Obstacles15', 'T3'),
-    # ('Jaimie', 'Obstacles35', 'T3'),
-    # ('Jaimie', 'RampA', 'T3'),
-    # ('Jaimie', 'StraightF', 'T3'),
-    # ('Jaimie', 'Turn90FL', 'T3'),
-    # ('Jaimie', 'Turn90FR', 'T3'),
-    # ('Jaimie', 'Turn180L', 'T3'),
-    # ('Jaimie', 'Turn180R', 'T3'),
+    ('Mahsa', 'Turn180R', 'T2')
 ]
 
 # Time domain feature functions and names
@@ -70,7 +60,6 @@ TIME_FEATURES_NAMES = ['Mean', 'Std', 'Max', 'Min', 'RMS']
 SENSOR_MODULE = {'wLength': 32, 'fSamp': 240, 'fLow': 5, 'fHigh': 1}
 
 PERFORMANCE = {}
-
 
 # CLASSES
 
@@ -91,10 +80,14 @@ class ClIntentionDetector:
 
         print('unpickling')
 
+        self.markovModel = load('HMP.joblib')
+
         self.RFTimelinePipeline = load('models/modelRFKinetic.joblib')
 
-        self.RFResults = pd.DataFrame(columns=["Time", "Cluster 1", "Cluster 2", "Cluster 3", "Cluster 4",
-                                               "Cluster 5", "Cluster 6", "Torque L", "Torque R"])
+        print(self.RFTimelinePipeline.get_params())
+
+        self.RFResults = pd.DataFrame(columns=["Time", "No Assist", "Straight", "Left", "Right",
+                                               "Torque L", "Torque R"])
 
         # Prepopulate pandas dataframe
         EFTimeColumnNames = ['{} {}'.format(featName, direction) for direction in DATA_COLUMNS for
@@ -158,12 +151,12 @@ class ClIntentionDetector:
 
         count = 0
 
+        p_xc_zc = np.ones(4) / 4
+
         startTime = time.time()
 
         # Keep running until run marker tells to terminate
         while self.runMarker.empty():
-
-            # time.sleep(waitTime - (time.perf_counter() % waitTime))
 
             count += 1
 
@@ -177,13 +170,18 @@ class ClIntentionDetector:
             intentionRFTime = self.RFTimelinePipeline.predict_proba(self.EFTimeColumnedFeatures)
 
             try:
+
+                likelihood = np.array([intentionRFTime[0, 0] + intentionRFTime[0, 3] + intentionRFTime[0, 4],
+                                       intentionRFTime[0, 2], intentionRFTime[0, 5], intentionRFTime[0, 1]])
+
+                p_xc_zp = self.markovModel @ p_xc_zc
+                p_xc_zc = np.multiply(likelihood, p_xc_zp) / (likelihood @ p_xc_zp)
+
                 # print('Prediction: {}'.format(intentionRFTime))
-                self.RFResults = self.RFResults.append({"Cluster 1": intentionRFTime[0, 0],
-                                                        "Cluster 2": intentionRFTime[0, 1],
-                                                        "Cluster 3": intentionRFTime[0, 2],
-                                                        "Cluster 4": intentionRFTime[0, 3],
-                                                        "Cluster 5": intentionRFTime[0, 4],
-                                                        "Cluster 6": intentionRFTime[0, 5],
+                self.RFResults = self.RFResults.append({"No Assist": p_xc_zc[0],
+                                                        "Straight": p_xc_zc[1],
+                                                        "Left": p_xc_zc[2],
+                                                        "Right": p_xc_zc[3],
                                                         "Torque L": self.EFTimeColumnedFeatures['Mean Torque_L'][0],
                                                         "Torque R": self.EFTimeColumnedFeatures['Mean Torque_R'][0],
                                                         "Time": time.time()},
@@ -191,6 +189,8 @@ class ClIntentionDetector:
             except Exception as e:
                 print("Exception: {}".format(e))
                 break
+
+            # time.sleep(waitTime - (time.perf_counter() % waitTime))
 
         endTime = time.time()
 
@@ -203,8 +203,9 @@ class ClIntentionDetector:
 
         self.RFResults.to_csv(
             os.path.join('2021-Results',
-                         "{:.0f}Hz-{}-{}-{}.csv".format(self.sensorParam['fSamp'], self.sensorParam['wLength'],
-                                                        self.testSet[1], self.testSet[0])))
+                         "{:.0f}ms-{}-{}-{}.csv".format(CLASS_DELAY * 1000, self.sensorParam['wLength'],
+                                                        self.testSet[1],
+                                                        self.testSet[0])))
         print('Saved.')
 
     def fnShutDown(self):
